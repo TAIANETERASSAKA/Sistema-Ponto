@@ -1,0 +1,79 @@
+name: sistema-ponto
+
+services:
+  # ── Banco de dados ──────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: ponto-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_DB: ${DB_NAME}
+      TZ: America/Sao_Paulo
+      PGTZ: America/Sao_Paulo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Sem porta publicada: só a API acessa o banco, pela rede interna do Docker
+
+  # ── API ─────────────────────────────────────────────────────────────────
+  back:
+    build:
+      context: ./back
+      network: host # usa a rede da máquina durante o build (evita falhas de DNS do Docker)
+    container_name: ponto-back
+    restart: unless-stopped
+    env_file: ./back/.env
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ${DB_USER}
+      DB_PASS: ${DB_PASS}
+      DB_NAME: ${DB_NAME}
+    ports:
+      - "7080:7080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ── Interface web ───────────────────────────────────────────────────────
+  front:
+    build:
+      context: ./front
+      network: host
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:7080/api}
+    container_name: ponto-front
+    restart: unless-stopped
+    ports:
+      - "8090:80"
+    depends_on:
+      - back
+
+  # ── Backup diário (RNF06) ───────────────────────────────────────────────
+  backup:
+    image: postgres:16-alpine
+    container_name: ponto-backup
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_DB: ${DB_NAME}
+      BACKUP_HORA: ${BACKUP_HORA:-02:00}
+      BACKUP_RETENCAO_DIAS: ${BACKUP_RETENCAO_DIAS:-14}
+      TZ: America/Sao_Paulo
+    volumes:
+      - ./backup/backup.sh:/backup.sh:ro
+      - ./backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
